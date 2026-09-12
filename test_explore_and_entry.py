@@ -267,3 +267,67 @@ def test_small_n_analyses_never_fit_a_model():
     text = open(src).read()
     for banned in ("AttributionModel", "cross_validate", "permutation_test", "fit("):
         assert banned not in text, banned
+
+
+# ---------------------------------------------------------------------
+# the in-app variable reference
+# ---------------------------------------------------------------------
+def test_variable_reference_covers_every_family():
+    from config import FAMILIES
+    from variables import FAMILY_MEANING, count_variables, reference_frame
+
+    ref = reference_frame()
+    for fam in ("MATERIAL", "FORMULATION", "PROCESS", "IPQC_PHYSICAL", "RESPONSE"):
+        assert fam in FAMILY_MEANING
+        assert fam in set(ref["family"]), fam
+        assert count_variables()[fam] >= 10
+    assert set(ref["family"]).issubset(set(FAMILIES))
+    assert len(ref) >= 70
+
+
+def test_every_reference_variable_is_documented():
+    from variables import reference_frame
+
+    ref = reference_frame()
+    assert ref["variable"].str.strip().ne("").all()
+    assert not ref["variable"].str.contains(" ").any()      # usable as column names
+
+
+def test_dual_role_variables_default_to_ipqc():
+    from variables import DUAL_ROLE, families_for
+
+    assert "hardness_N" in DUAL_ROLE
+    assert families_for(["hardness_N"])["hardness_N"] == "IPQC_PHYSICAL"
+    assert families_for(["q30_pct"])["q30_pct"] == "RESPONSE"
+    assert families_for(["main_compression_kN"])["main_compression_kN"] == "PROCESS"
+
+
+def test_template_builder_produces_a_loadable_table():
+    from variables import build_template, families_for
+
+    names = ["polymer_level_pct", "main_compression_kN", "q30_pct"]
+    tmpl = build_template(names, 5)
+    assert list(tmpl.columns)[:3] == ["batch", "formulation", "manufacturing_date"]
+    assert len(tmpl) == 5
+    tmpl["formulation"] = ["F1", "F1", "F1", "F2", "F2"]
+    for i, n in enumerate(names):
+        tmpl[n] = [1.0 + i, 2.0, 3.0, 4.0, 5.0]
+    wide, meta = split_single_table(tmpl)
+    ds = build_dataset(wide, families_for(names), meta)
+    assert ds.n_batches == 5 and ds.n_formulations == 2
+
+
+def test_dissolution_template_has_the_expected_shape():
+    from variables import dissolution_template
+
+    t = dissolution_template(["B001", "B002"], ("0.1N HCl", "pH 6.8 phosphate"))
+    assert set(t.columns) == {"batch", "medium", "time_h", "percent_released"}
+    assert len(t) == 2 * 2 * 8
+
+
+def test_profile_metric_reference_matches_what_the_app_computes():
+    from response import PROFILE_METRICS
+    from variables import profile_frame
+
+    listed = set(profile_frame()["metric"])
+    assert listed == set(PROFILE_METRICS), listed ^ set(PROFILE_METRICS)
