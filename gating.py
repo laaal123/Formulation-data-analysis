@@ -10,6 +10,8 @@ from typing import Dict, List, Optional
 
 TABS = (
     "Data",
+    "Choose analysis",
+    "Quick analysis",
     "Design diagnostics",
     "Response",
     "Model",
@@ -18,6 +20,10 @@ TABS = (
     "Next experiment",
     "Method record",
 )
+
+ATTRIBUTION_IDS = {"design_check", "screen", "attribution", "next_experiment"}
+QUICK_IDS = {"compare", "what_changed", "descriptive", "trend", "spec_check",
+             "f2", "profile_summary"}
 
 FINDINGS_BANNER = (
     "Association from observational batch data. Not causation. "
@@ -31,6 +37,9 @@ class SessionState:
 
     data_loaded: bool = False
     data_has_errors: bool = False
+    analysis_chosen: bool = False
+    analysis_id: str = ""
+    quick_ready: bool = False
     diagnostics_viewed: bool = False
     response_chosen: bool = False
     response_usable: bool = False
@@ -51,13 +60,27 @@ def tab_status(state: SessionState) -> Dict[str, Dict]:
 
     put("Data", True)
     put(
-        "Design diagnostics",
+        "Choose analysis",
         s.data_loaded,
-        "Load a batch table and its metadata first.",
+        "Load or enter your batch data first. What you can do depends on how many "
+        "batches and formulations you have.",
+    )
+    put(
+        "Quick analysis",
+        s.data_loaded and s.quick_ready,
+        "Pick one of the describe-and-compare or dissolution analyses on the Choose "
+        "analysis step. These work from two batches upward.",
+    )
+    put(
+        "Design diagnostics",
+        s.data_loaded and s.analysis_id in ATTRIBUTION_IDS,
+        "Choose one of the attribution analyses first. These need roughly ten batches "
+        "across two or more formulations; with fewer, the describe-and-compare "
+        "analyses are the ones that can answer anything.",
     )
     put(
         "Response",
-        s.data_loaded and s.diagnostics_viewed,
+        s.data_loaded and s.diagnostics_viewed and s.analysis_id in ATTRIBUTION_IDS,
         "Read the design diagnostics first. What the data can answer is decided there, "
         "not by the response you pick.",
     )
@@ -105,6 +128,8 @@ def state_from_result(result, diagnostics_viewed: bool = True) -> SessionState:
         return SessionState()
     return SessionState(
         data_loaded=True,
+        analysis_chosen=True,
+        analysis_id="attribution",
         diagnostics_viewed=diagnostics_viewed,
         response_chosen=True,
         response_usable=bool(result.response.usable),

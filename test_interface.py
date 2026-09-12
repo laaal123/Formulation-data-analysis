@@ -25,6 +25,7 @@ APP = Path(__file__).resolve().parent / "app.py"
 # ---------------------------------------------------------------------
 def test_tab_order_is_the_analysis_order():
     assert TABS[0] == "Data"
+    assert TABS.index("Choose analysis") == 1
     assert TABS.index("Design diagnostics") < TABS.index("Response")
     assert TABS.index("Model") < TABS.index("Validation") < TABS.index("Findings")
     assert TABS.index("Findings") < TABS.index("Next experiment")
@@ -41,7 +42,7 @@ def test_everything_is_locked_before_data_is_loaded():
 
 
 def test_response_is_locked_until_diagnostics_are_viewed():
-    s = SessionState(data_loaded=True, diagnostics_viewed=False)
+    s = SessionState(data_loaded=True, diagnostics_viewed=False, analysis_id="attribution")
     assert tab_status(s)["Design diagnostics"]["unlocked"]
     assert not tab_status(s)["Response"]["unlocked"]
     s.diagnostics_viewed = True
@@ -49,7 +50,7 @@ def test_response_is_locked_until_diagnostics_are_viewed():
 
 
 def test_model_is_locked_for_a_refused_response():
-    s = SessionState(data_loaded=True, diagnostics_viewed=True,
+    s = SessionState(data_loaded=True, diagnostics_viewed=True, analysis_id="attribution",
                      response_chosen=True, response_usable=False)
     assert not tab_status(s)["Model"]["unlocked"]
     assert "refused" in tab_status(s)["Model"]["reason"].lower()
@@ -57,8 +58,8 @@ def test_model_is_locked_for_a_refused_response():
 
 def test_findings_stay_locked_until_validation_passes():
     s = SessionState(data_loaded=True, diagnostics_viewed=True, response_chosen=True,
-                     response_usable=True, model_configured=True, validation_run=True,
-                     validation_passed=False)
+                     analysis_id="attribution", response_usable=True, model_configured=True,
+                     validation_run=True, validation_passed=False)
     assert not tab_status(s)["Findings"]["unlocked"]
     assert "permutation" in tab_status(s)["Findings"]["reason"].lower()
     s.validation_passed = True
@@ -67,8 +68,8 @@ def test_findings_stay_locked_until_validation_passes():
 
 def test_next_experiment_is_open_even_when_nothing_was_supported():
     s = SessionState(data_loaded=True, diagnostics_viewed=True, response_chosen=True,
-                     response_usable=True, model_configured=True, validation_run=True,
-                     validation_passed=False)
+                     analysis_id="attribution", response_usable=True, model_configured=True,
+                     validation_run=True, validation_passed=False)
     assert tab_status(s)["Next experiment"]["unlocked"]
     assert not tab_status(s)["Findings"]["unlocked"]
 

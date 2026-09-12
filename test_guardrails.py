@@ -21,11 +21,7 @@ from synthetic import example_dataset, make_controlled
 from validation import make_splits
 
 PKG = Path(__file__).resolve().parent
-_MODULES = {
-    "config.py", "errors.py", "loader.py", "synthetic.py", "diagnostics.py",
-    "response.py", "modelling.py", "validation.py", "interpret.py", "gating.py",
-    "record.py", "pipeline.py",
-}
+_MODULES = {m + ".py" for m in ['config', 'errors', 'loader', 'synthetic', 'diagnostics', 'response', 'modelling', 'validation', 'interpret', 'gating', 'record', 'pipeline', 'explore', 'catalogue']}
 SOURCES = {p.name: p.read_text() for p in PKG.glob("*.py") if p.name in _MODULES}
 FAST = RunSettings(n_permutations=40, n_bootstrap=30, inner_cv_splits=3)
 

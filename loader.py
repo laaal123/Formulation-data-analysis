@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from config import FAMILIES, PREDICTOR_FAMILIES, THRESHOLDS
+from errors import DataError
 
 SEVERITIES = ("ERROR", "WARNING", "INFO")
 
@@ -120,6 +121,50 @@ def long_to_wide(
     wide = long_df.pivot(index=batch_col, columns=variable_col, values=value_col)
     wide.columns.name = None
     return wide.reset_index()
+
+
+META_COLUMNS = (
+    "formulation",
+    "manufacturing_date",
+    "scale",
+    "equipment_train",
+    "site",
+    "operator_shift",
+)
+
+
+def split_single_table(df: pd.DataFrame, batch_col: str = "batch"):
+    """Split one combined table into (wide, metadata).
+
+    Typing or pasting two separate tables is a nuisance, so the app accepts a single
+    table that carries `formulation` alongside the measurements and separates them
+    here. Anything recognised as metadata is moved out; everything else stays as a
+    candidate variable.
+    """
+    if batch_col not in df.columns:
+        raise DataError(
+            f"The table needs a column named {batch_col!r}. Found: "
+            + ", ".join(map(str, df.columns[:12]))
+        )
+    if "formulation" not in df.columns:
+        raise DataError(
+            "The table needs a 'formulation' column saying which formulation each batch "
+            "belongs to. Without it there is no grouping to validate against, and "
+            "leave-one-formulation-out cannot be done."
+        )
+    present = [c for c in META_COLUMNS if c in df.columns]
+    metadata = df[[batch_col] + present].copy()
+    wide = df.drop(columns=present)
+    return wide, metadata
+
+
+def blank_entry_table(n_batches: int = 6, extra_columns=None) -> pd.DataFrame:
+    """An empty grid for manual entry, with the two required columns already present."""
+    cols = ["batch", "formulation"] + list(extra_columns or [])
+    data = {c: [None] * n_batches for c in cols}
+    df = pd.DataFrame(data)
+    df["batch"] = [f"B{i+1:03d}" for i in range(n_batches)]
+    return df
 
 
 # ---------------------------------------------------------------------

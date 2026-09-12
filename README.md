@@ -1,14 +1,7 @@
-> **This is the FLAT single-folder build.** Every Python file sits at the top level, so
-> you can select all and upload in one action. It is functionally identical to the
-> packaged build and passes the same 99 tests, with three differences:
->
-> - imports are `from modelling import ...` rather than `from batchattr.modelling import ...`
-> - the tests live beside the source instead of in `tests/`
-> - `.streamlit/config.toml` (theme) and `.github/workflows/ci.yml` (CI) are omitted,
->   because they only work inside their dot-folders. Neither affects whether the app runs;
->   add them later via **Add file -> Create new file** if you want them.
->
-> If you would rather have the conventional package layout, use the other build.
+> **FLAT single-folder build.** Every file at the top level so you can select all and
+> upload in one action. Functionally identical to the packaged build and passes the same
+> 125 tests; imports are `from modelling import ...`, tests sit beside the source, and
+> `.streamlit/` and `.github/` are omitted because they only work inside dot-folders.
 
 # Batch factor attribution
 
@@ -36,7 +29,7 @@ pip install -r requirements-dev.txt   # runtime + pytest
 
 streamlit run app.py          # the interface
 python run_example.py         # command-line demo on synthetic data with known truth
-pytest -q                     # 99 tests, must be zero failures
+pytest -q                     # 73 tests, both suites, must be zero failures
 ```
 
 `run_example.py --record method_record.md` writes the full method record.
@@ -65,13 +58,13 @@ Eight tabs in the order the analysis must be done in, and they are **gated**:
 Findings carries a persistent banner: *Association from observational batch data. Not
 causation. See the confound list for each factor.*
 
-Gating lives in `gating.py`, outside Streamlit, so it is unit-tested.
+Gating lives in `batchattr/gating.py`, outside Streamlit, so it is unit-tested.
 
 ---
 
 ## Modules
 
-| File | Prompt | Contents |
+| Module | Prompt | Contents |
 |---|---|---|
 | `loader.py` | 1 | wide/long ingestion, dissolution and metadata tables, `ValidationReport`, explicit imputation |
 | `synthetic.py` | 1 | 24 batches × 4 formulations with confounding built to known ground truth; controlled generators for testing |
@@ -84,6 +77,50 @@ Gating lives in `gating.py`, outside Streamlit, so it is unit-tested.
 | `pipeline.py` | — | orchestrator enforcing the order |
 
 ---
+
+## What you can actually do
+
+Ten analyses, each with its own honest minimum. The small-batch ones are real analyses,
+not consolation prizes.
+
+**Describe and compare — from 2 batches**
+
+| Analysis | The question it answers |
+|---|---|
+| Compare batches side by side | How do these batches differ, variable by variable? |
+| What changed between two batches? | My last batch behaved differently. What was not the same? |
+| Summary statistics | What are the means, spreads and ranges? |
+| Trend one variable across batches | Is this drifting over time or between formulations? (3+) |
+| Check against your specification | Which batches sit outside the limits I set? |
+
+**Dissolution profiles — from 2 batches**
+
+| Analysis | The question it answers |
+|---|---|
+| Compare two profiles (f2 and f1) | Is my test batch similar to the reference? |
+| Summarise every curve | Weibull, MDT, dissolution efficiency, t50, t80 per batch |
+
+**Find what is linked to a result — from 10 batches, 2 formulations**
+
+| Analysis | The question it answers |
+|---|---|
+| What can my data actually answer? | Which questions are answerable with what I have? (3+) |
+| Screen all factors against one result | Which factors track my CQA, one at a time? (8+) |
+| Full attribution | What is associated with my result, and can I trust it? |
+| Design the confirmatory experiment | What should I actually run to find out? |
+
+**On small batch numbers.** With three batches you can compare, check similarity and list
+every difference — and that difference list feeds straight into a designed experiment.
+What you cannot do is rank causes: with three batches and dozens of recorded variables
+every difference is perfectly confounded with every other, so a ranking would be an
+artefact of the arithmetic rather than a property of your product. The app offers the
+first set and withholds the second, and says why.
+
+## Getting data in
+
+Four ways: load the built-in example, upload CSV or Excel, type it into a grid, or paste
+a block straight out of Excel. A single table carrying a `formulation` column is enough —
+the metadata file is optional.
 
 ## The model ladder
 

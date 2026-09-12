@@ -14,11 +14,35 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from catalogue import BY_ID, GROUPS, available_analyses, small_batch_guidance
 from config import FAMILIES, RunSettings
-from errors import Refusal
-from gating import FINDINGS_BANNER, TABS, SessionState, state_from_result, tab_status
+from errors import DataError, Refusal
+from explore import (
+    compare_batches,
+    compare_profiles,
+    descriptive_summary,
+    profile_summary,
+    spec_check,
+    trend_table,
+    what_changed,
+)
+from gating import (
+    ATTRIBUTION_IDS,
+    FINDINGS_BANNER,
+    QUICK_IDS,
+    TABS,
+    SessionState,
+    state_from_result,
+    tab_status,
+)
 from interpret import linear_contributions, partial_dependence
-from loader import build_dataset, long_to_wide, read_table
+from loader import (
+    blank_entry_table,
+    build_dataset,
+    long_to_wide,
+    read_table,
+    split_single_table,
+)
 from modelling import MODEL_TYPES
 from pipeline import run_attribution
 from record import to_json, to_markdown
@@ -34,12 +58,18 @@ S.setdefault("result", None)
 S.setdefault("diagnostics_viewed", False)
 S.setdefault("response_choice", None)
 S.setdefault("model_configured", False)
+S.setdefault("analysis_id", "")
+S.setdefault("entry_df", None)
 
 
 # ---------------------------------------------------------------------
 def _state() -> SessionState:
     if S.result is not None:
-        return state_from_result(S.result, S.diagnostics_viewed)
+        st_ = state_from_result(S.result, S.diagnostics_viewed)
+        st_.analysis_id = S.get("analysis_id", "attribution")
+        st_.analysis_chosen = bool(st_.analysis_id)
+        st_.quick_ready = st_.analysis_id in QUICK_IDS
+        return st_
     return SessionState(
         data_loaded=S.ds is not None,
         data_has_errors=bool(S.ds is not None and not S.ds.report.ok),
@@ -47,6 +77,9 @@ def _state() -> SessionState:
         response_chosen=S.response_choice is not None,
         response_usable=S.response_choice is not None,
         model_configured=S.model_configured,
+        analysis_chosen=bool(S.get("analysis_id")),
+        analysis_id=S.get("analysis_id", ""),
+        quick_ready=S.get("analysis_id", "") in QUICK_IDS,
     )
 
 
@@ -90,39 +123,152 @@ if not status[choice]["unlocked"]:
 # ---------------------------------------------------------------------
 if choice == "Data":
     st.subheader("1. Data")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("Load the synthetic example (24 batches, known confounding)"):
+    mode = st.radio(
+        "How do you want to get your data in?",
+        ["Load the example", "Upload files", "Type it in", "Paste from Excel"],
+        horizontal=True,
+    )
+
+    # ---------------- example -------------------------------------
+    if mode == "Load the example":
+        st.caption(
+            "24 batches across 4 formulations, with dissolution profiles and confounding "
+            "built in on purpose. Useful for seeing what each screen does."
+        )
+        if st.button("Load the synthetic example"):
             S.ds = example_dataset()
             S.result = None
             S.diagnostics_viewed = False
-    with col2:
-        st.caption("Or upload your own below.")
+            S.analysis_id = ""
+            st.success("Loaded.")
 
-    up_wide = st.file_uploader("Batch table (wide or long CSV/Excel)", type=["csv", "xlsx"])
-    up_meta = st.file_uploader("Batch metadata (batch, formulation, date, ...)", type=["csv", "xlsx"])
-    up_diss = st.file_uploader(
-        "Dissolution profiles (batch, medium, time_h, percent_released)", type=["csv", "xlsx"]
-    )
-    fmt = st.radio("Batch table format", ["wide", "long"], horizontal=True)
+    # ---------------- upload --------------------------------------
+    elif mode == "Upload files":
+        st.caption(
+            "One row per batch. If your batch table already has a `formulation` column, "
+            "the metadata file is optional."
+        )
+        up_wide = st.file_uploader("Batch table (CSV or Excel)", type=["csv", "xlsx"])
+        up_meta = st.file_uploader("Batch metadata (optional if formulation is above)",
+                                   type=["csv", "xlsx"])
+        up_diss = st.file_uploader(
+            "Dissolution profiles (optional): batch, medium, time_h, percent_released",
+            type=["csv", "xlsx"],
+        )
+        fmt = st.radio("Batch table format", ["wide", "long"], horizontal=True)
+        if up_wide is not None and st.button("Load and validate"):
+            try:
+                wide = read_table(up_wide)
+                if fmt == "long":
+                    wide = long_to_wide(wide)
+                diss = read_table(up_diss) if up_diss is not None else None
+                if up_meta is not None:
+                    meta = read_table(up_meta)
+                else:
+                    wide, meta = split_single_table(wide)
+                families = {c: "PROCESS" for c in wide.columns if c != "batch"}
+                S.ds = build_dataset(wide, families, meta, diss)
+                S.result = None
+                S.diagnostics_viewed = False
+                S.analysis_id = ""
+                st.info("Loaded with every column tagged PROCESS. Correct the tags below.")
+            except (Refusal, DataError, ValueError, KeyError) as exc:
+                st.error(f"Refused to load: {exc}")
 
-    if up_wide is not None and up_meta is not None and st.button("Load and validate"):
-        wide = read_table(up_wide) if hasattr(up_wide, "name") else None
-        meta = read_table(up_meta)
-        diss = read_table(up_diss) if up_diss is not None else None
-        if fmt == "long":
-            wide = long_to_wide(wide)
-        families = {c: "PROCESS" for c in wide.columns if c != "batch"}
-        try:
-            S.ds = build_dataset(wide, families, meta, diss)
-            S.result = None
-            S.diagnostics_viewed = False
-            st.info("Loaded with every column tagged PROCESS. Correct the tags below.")
-        except (Refusal, ValueError, KeyError) as exc:
-            st.error(f"Refused to load: {exc}")
+    # ---------------- manual entry --------------------------------
+    elif mode == "Type it in":
+        st.caption(
+            "Build the table here. You need a `batch` column and a `formulation` column; "
+            "add one column per thing you measured or set. Two batches is enough for the "
+            "compare-and-describe analyses."
+        )
+        c1, c2 = st.columns([1, 2])
+        n_rows = c1.number_input("Number of batches", 1, 200, 6)
+        if "entry_cols" not in S:
+            S.entry_cols = {"hardness_N": "IPQC_PHYSICAL", "assay_pct": "RESPONSE"}
 
+        with c2.form("add_col", clear_on_submit=True):
+            a, b, c = st.columns([2, 2, 1])
+            new_name = a.text_input("Add a column", placeholder="e.g. hpmc_level_pct")
+            new_fam = b.selectbox("Family", list(FAMILIES), index=list(FAMILIES).index("PROCESS"))
+            if c.form_submit_button("Add") and new_name.strip():
+                S.entry_cols[new_name.strip()] = new_fam
+                S.entry_df = None
+
+        drop = st.multiselect("Remove columns", list(S.entry_cols))
+        if drop and st.button("Remove selected"):
+            for d in drop:
+                S.entry_cols.pop(d, None)
+            S.entry_df = None
+
+        base = blank_entry_table(int(n_rows), list(S.entry_cols))
+        if S.get("entry_df") is not None:
+            prev = S.entry_df
+            for col in base.columns:
+                if col in prev.columns:
+                    base[col] = list(prev[col][: len(base)]) + [None] * max(0, len(base) - len(prev))
+        S.entry_df = st.data_editor(
+            base, num_rows="fixed", use_container_width=True, height=320, key="entry_editor"
+        )
+        st.caption(
+            "Tip: you can paste a block straight from Excel into this grid. "
+            "Column families: " + ", ".join(f"{k} = {v}" for k, v in S.entry_cols.items())
+        )
+        if st.button("Build dataset from this table", type="primary"):
+            try:
+                df = S.entry_df.copy()
+                for col in S.entry_cols:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                wide, meta = split_single_table(df)
+                S.ds = build_dataset(wide, dict(S.entry_cols), meta)
+                S.result = None
+                S.diagnostics_viewed = False
+                S.analysis_id = ""
+                st.success(f"Built: {S.ds.n_batches} batches, {S.ds.n_formulations} formulations.")
+            except (Refusal, DataError, ValueError, KeyError) as exc:
+                st.error(f"Refused: {exc}")
+
+    # ---------------- paste ---------------------------------------
+    else:
+        st.caption(
+            "Copy the block out of Excel including the header row and paste it here. "
+            "Tabs or commas both work. Must include `batch` and `formulation` columns."
+        )
+        text = st.text_area("Paste your table", height=240,
+                            placeholder="batch\tformulation\thpmc_level_pct\tq30_pct\nB001\tF1\t18.2\t26.1")
+        diss_text = st.text_area(
+            "Dissolution profiles (optional): batch, medium, time_h, percent_released",
+            height=120,
+        )
+        if st.button("Read pasted data") and text.strip():
+            try:
+                df = pd.read_csv(io.StringIO(text.strip()), sep=None, engine="python")
+                diss = (
+                    pd.read_csv(io.StringIO(diss_text.strip()), sep=None, engine="python")
+                    if diss_text.strip() else None
+                )
+                wide, meta = split_single_table(df)
+                families = {c: "PROCESS" for c in wide.columns if c != "batch"}
+                S.ds = build_dataset(wide, families, meta, diss)
+                S.result = None
+                S.diagnostics_viewed = False
+                S.analysis_id = ""
+                st.info(
+                    f"Read {S.ds.n_batches} batches. Every column is tagged PROCESS; "
+                    "correct the tags below."
+                )
+            except (Refusal, DataError, ValueError, KeyError) as exc:
+                st.error(f"Could not read that: {exc}")
+
+    # ---------------- tagging and report --------------------------
     if S.ds is not None:
+        st.markdown("---")
         st.markdown("**Column family tagging** — the family decides how a column is treated.")
+        st.caption(
+            "MATERIAL and FORMULATION and PROCESS are things you set or receive. "
+            "IPQC_PHYSICAL is something you measured on the way through. RESPONSE is the "
+            "result you want to explain."
+        )
         tags = pd.DataFrame(
             {
                 "column": list(S.ds.wide.columns),
@@ -136,9 +282,7 @@ if choice == "Data":
                 "family": st.column_config.SelectboxColumn(options=list(FAMILIES)),
                 "excluded_reason": st.column_config.TextColumn(disabled=True),
             },
-            hide_index=True,
-            use_container_width=True,
-            height=320,
+            hide_index=True, use_container_width=True, height=300,
         )
         if st.button("Apply tags"):
             S.ds.families = dict(zip(edited["column"], edited["family"]))
@@ -146,16 +290,12 @@ if choice == "Data":
             st.success("Tags applied.")
 
         st.markdown("**Validation report**")
-        rep = S.ds.report.to_frame()
-        st.dataframe(rep, use_container_width=True, hide_index=True)
+        st.dataframe(S.ds.report.to_frame(), use_container_width=True, hide_index=True)
         if not S.ds.report.ok:
-            st.error(
-                "Errors above must be fixed in the source data. Nothing here is coerced or "
-                "guessed for you."
-            )
-        st.markdown("**Missingness** — nothing is imputed unless you choose a method.")
-        st.dataframe(S.ds.missingness().head(20), use_container_width=True)
-        with st.expander("Explicit imputation (recorded in the method record)"):
+            st.error("Errors above must be fixed in the source data. Nothing is coerced for you.")
+
+        with st.expander("Missingness and explicit imputation"):
+            st.dataframe(S.ds.missingness().head(20), use_container_width=True)
             method = st.selectbox("Method", ["median", "mean", "drop_columns", "drop_batches"])
             cols = st.multiselect(
                 "Columns", [c for c in S.ds.wide.columns if S.ds.wide[c].isna().any()]
@@ -165,12 +305,168 @@ if choice == "Data":
                 S.result = None
                 st.success(f"{method} applied to {len(cols)} column(s) and recorded.")
 
+        st.download_button(
+            "Download this batch table as CSV",
+            S.ds.wide.reset_index().to_csv(index=False),
+            "batch_table.csv",
+        )
+
 
 # ---------------------------------------------------------------------
-# 2. Design diagnostics
+# 2. Choose analysis
 # ---------------------------------------------------------------------
+elif choice == "Choose analysis":
+    st.subheader("2. Choose analysis")
+    ds = S.ds
+    st.info(small_batch_guidance(ds.n_batches, ds.n_formulations))
+
+    rows = available_analyses(ds)
+    for group in GROUPS:
+        st.markdown(f"### {group}")
+        for row in [r for r in rows if r["analysis"].group == group]:
+            a = row["analysis"]
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                with left:
+                    st.markdown(f"**{a.name}**")
+                    st.caption(a.question)
+                    st.write(a.output)
+                    if a.caution:
+                        st.warning(a.caution)
+                    need = f"Needs {a.min_batches}+ batches"
+                    if a.min_formulations > 1:
+                        need += f", {a.min_formulations}+ formulations"
+                    if a.needs_dissolution:
+                        need += ", dissolution data"
+                    if a.needs_response:
+                        need += ", a RESPONSE column"
+                    st.caption(need)
+                with right:
+                    if row["available"]:
+                        if st.button("Select", key=f"pick_{a.id}"):
+                            S.analysis_id = a.id
+                            S.result = None
+                            st.success(f"Selected: {a.name}")
+                    else:
+                        st.button("Unavailable", key=f"pick_{a.id}", disabled=True)
+                        st.caption(row["reason"])
+
+    if S.get("analysis_id"):
+        picked = BY_ID[S.analysis_id]
+        st.markdown("---")
+        st.success(f"Selected: **{picked.name}**")
+        if picked.id in QUICK_IDS:
+            st.write("Go to **Quick analysis**.")
+        else:
+            st.write("Go to **Design diagnostics** and work down the steps in order.")
+
+
+# ---------------------------------------------------------------------
+# 3. Quick analysis
+# ---------------------------------------------------------------------
+elif choice == "Quick analysis":
+    ds = S.ds
+    aid = S.get("analysis_id", "")
+    picked = BY_ID.get(aid)
+    st.subheader(f"3. {picked.name if picked else 'Quick analysis'}")
+    if picked and picked.caution:
+        st.warning(picked.caution)
+    numeric_cols = [c for c in ds.wide.columns if pd.api.types.is_numeric_dtype(ds.wide[c])]
+
+    try:
+        if aid == "compare":
+            sel = st.multiselect("Batches", ds.batches, default=ds.batches[: min(4, ds.n_batches)])
+            fams = st.multiselect("Limit to families", list(FAMILIES))
+            if sel:
+                st.dataframe(compare_batches(ds, sel, fams or None), use_container_width=True, height=520)
+
+        elif aid == "what_changed":
+            c1, c2 = st.columns(2)
+            a = c1.selectbox("Batch A", ds.batches, index=0)
+            b = c2.selectbox("Batch B", ds.batches, index=min(1, ds.n_batches - 1))
+            fam_filter = st.multiselect(
+                "Show only these families (recommended: what you deliberately set)",
+                list(FAMILIES),
+            )
+            tbl = what_changed(ds, a, b)
+            if fam_filter:
+                tbl = tbl[tbl["family"].isin(fam_filter)]
+            st.dataframe(tbl, use_container_width=True, height=460)
+            st.caption(tbl.attrs.get("caption", ""))
+
+        elif aid == "descriptive":
+            st.dataframe(descriptive_summary(ds), use_container_width=True, height=520)
+
+        elif aid == "trend":
+            col = st.selectbox("Variable", numeric_cols)
+            t = trend_table(ds, col)
+            fig, ax = plt.subplots(figsize=(7, 3))
+            for f in sorted(pd.unique(t["formulation"])):
+                sub = t[t["formulation"] == f]
+                ax.plot(sub.index, sub[col], "o-", label=str(f))
+            if np.isfinite(t.attrs["mean"]):
+                ax.axhline(t.attrs["mean"], color="grey", ls="--", lw=1, label="mean")
+            ax.set_xlabel("batch, in manufacturing order")
+            ax.set_ylabel(col)
+            ax.legend(fontsize=8)
+            fig.tight_layout()
+            st.pyplot(fig)
+            st.dataframe(t, use_container_width=True, hide_index=True)
+            st.caption(t.attrs["caption"])
+
+        elif aid == "spec_check":
+            st.write("Enter the limits you want to check against.")
+            col = st.selectbox("Variable", numeric_cols)
+            c1, c2 = st.columns(2)
+            lo = c1.number_input("Lower limit", value=float(np.nanmin(ds.wide[col].astype(float))))
+            hi = c2.number_input("Upper limit", value=float(np.nanmax(ds.wide[col].astype(float))))
+            res = spec_check(ds, {col: (lo, hi)})
+            st.dataframe(res, use_container_width=True, hide_index=True, height=380)
+            st.caption(res.attrs["caption"])
+
+        elif aid == "f2":
+            media = sorted(ds.dissolution["medium"].unique())
+            c1, c2, c3 = st.columns(3)
+            ref = c1.selectbox("Reference batch", ds.batches, index=0)
+            tst = c2.selectbox("Test batch", ds.batches, index=min(1, ds.n_batches - 1))
+            med = c3.selectbox("Medium", media)
+            r = compare_profiles(ds, ref, tst, med)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("f2 similarity", f"{r['f2']:.1f}")
+            m2.metric("f1 difference", f"{r['f1']:.1f}")
+            m3.metric("Time points", r["n_points"])
+            (st.success if r["f2"] >= 50 else st.error)(r["verdict"])
+            for n in r["notes"]:
+                st.warning(n)
+            fig, ax = plt.subplots(figsize=(6, 3.2))
+            ax.plot(r["table"]["time_h"], r["table"][ref], "o-", label=ref)
+            ax.plot(r["table"]["time_h"], r["table"][tst], "s-", label=tst)
+            ax.set_xlabel("hours")
+            ax.set_ylabel("% released")
+            ax.legend(fontsize=8)
+            fig.tight_layout()
+            st.pyplot(fig)
+            st.dataframe(r["table"], use_container_width=True, hide_index=True)
+
+        elif aid == "profile_summary":
+            media = sorted(ds.dissolution["medium"].unique())
+            med = st.selectbox("Medium", ["all"] + media)
+            tbl = profile_summary(ds, None if med == "all" else med)
+            st.dataframe(tbl, use_container_width=True, height=460)
+            st.caption(
+                "Weibull td is the time to about 63% released; MDT is the mean dissolution "
+                "time; dissolution efficiency is the area under the curve as a percentage "
+                "of complete release over the same window. A blank t80 means that batch "
+                "never reached 80% in the time measured, and has not been extrapolated."
+            )
+        else:
+            st.info("Choose one of the describe-and-compare or dissolution analyses first.")
+    except Refusal as exc:
+        st.error(f"Refused: {exc}")
+
+
 elif choice == "Design diagnostics":
-    st.subheader("2. Design diagnostics")
+    st.subheader("4. Design diagnostics")
     st.caption("What this dataset can and cannot answer. Read before modelling anything.")
     from diagnostics import assess_design
 
@@ -237,7 +533,7 @@ elif choice == "Design diagnostics":
 # 3. Response
 # ---------------------------------------------------------------------
 elif choice == "Response":
-    st.subheader("3. Response")
+    st.subheader("5. Response")
     from response import build_response
 
     kind = st.radio("Response type", ["Scalar column", "Dissolution profile metric"], horizontal=True)
@@ -310,7 +606,7 @@ elif choice == "Response":
 # 4. Model
 # ---------------------------------------------------------------------
 elif choice == "Model":
-    st.subheader("4. Model")
+    st.subheader("6. Model")
     st.caption(
         "Ladder: univariate screen, then regularised linear, then PLS, then non-linear only "
         "if justified. Prefer the simplest that works."
@@ -414,7 +710,7 @@ elif choice == "Model":
 # 5. Validation
 # ---------------------------------------------------------------------
 elif choice == "Validation":
-    st.subheader("5. Validation")
+    st.subheader("7. Validation")
     res = S.result
     if res is None:
         st.warning("Fit a model first.")
@@ -471,7 +767,7 @@ elif choice == "Validation":
 # 6. Findings
 # ---------------------------------------------------------------------
 elif choice == "Findings":
-    st.subheader("6. Findings")
+    st.subheader("8. Findings")
     st.error(FINDINGS_BANNER)
     res = S.result
     rep = res.report
@@ -514,7 +810,7 @@ elif choice == "Findings":
 # 7. Next experiment
 # ---------------------------------------------------------------------
 elif choice == "Next experiment":
-    st.subheader("7. Next experiment")
+    st.subheader("9. Next experiment")
     res = S.result
     if res.refused:
         for r in res.refusals:
@@ -536,7 +832,7 @@ elif choice == "Next experiment":
 # 8. Method record
 # ---------------------------------------------------------------------
 elif choice == "Method record":
-    st.subheader("8. Method record")
+    st.subheader("10. Method record")
     if S.result is None:
         st.info("Run an analysis to produce a full record. Decision rules are shown below.")
         from record import DECISION_RULES, REFERENCES
