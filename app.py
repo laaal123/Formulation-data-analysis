@@ -48,6 +48,16 @@ from pipeline import run_attribution
 from record import to_json, to_markdown
 from response import PROFILE_METRICS
 from synthetic import example_dataset
+from variables import (
+    DUAL_ROLE,
+    FAMILY_MEANING,
+    build_template,
+    count_variables,
+    dissolution_template,
+    families_for,
+    profile_frame,
+    reference_frame,
+)
 from validation import CV_SCHEMES
 
 st.set_page_config(page_title="Batch factor attribution", layout="wide")
@@ -123,6 +133,59 @@ if not status[choice]["unlocked"]:
 # ---------------------------------------------------------------------
 if choice == "Data":
     st.subheader("1. Data")
+
+    with st.expander("What can I analyse? Every variable this app understands", expanded=False):
+        counts = count_variables()
+        st.write(
+            f"{sum(counts.values())} named variables across five families, plus "
+            f"{len(profile_frame())} metrics computed from a dissolution profile. Any "
+            "numeric column you add will be analysed even if it is not on this list; what "
+            "the family tag changes is how it is treated."
+        )
+        for fam, meaning in FAMILY_MEANING.items():
+            st.markdown(f"**{fam}** ({counts.get(fam, 0)} listed) — {meaning}")
+        st.markdown("---")
+        pick_fams = st.multiselect(
+            "Show families", list(FAMILY_MEANING), default=list(FAMILY_MEANING)
+        )
+        ref = reference_frame(pick_fams)
+        st.dataframe(ref, use_container_width=True, hide_index=True, height=340)
+        st.caption(
+            "Listed in two families on purpose: "
+            + ", ".join(DUAL_ROLE)
+            + ". They are results you measured, and they can also be the thing you are "
+            "trying to explain. They arrive tagged IPQC_PHYSICAL; retag as RESPONSE if that "
+            "is your question."
+        )
+        st.markdown("**Computed from a dissolution profile table**")
+        st.dataframe(profile_frame(), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("**Build a blank template from the variables you actually record**")
+        chosen = st.multiselect(
+            "Pick your variables", ref["variable"].tolist(),
+            default=[v for v in ["polymer_level_pct", "granulation_water_pct",
+                                 "main_compression_kN", "hardness_N", "q30_pct"]
+                     if v in ref["variable"].tolist()],
+        )
+        n_t = st.number_input("Rows (batches)", 1, 200, 12, key="tmpl_rows")
+        if chosen:
+            tmpl = build_template(chosen, int(n_t))
+            st.dataframe(tmpl.head(4), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download batch table template (CSV)",
+                tmpl.to_csv(index=False), "batch_table_template.csv",
+            )
+            st.download_button(
+                "Download dissolution template (CSV)",
+                dissolution_template(tmpl["batch"].tolist()).to_csv(index=False),
+                "dissolution_template.csv",
+            )
+            st.caption(
+                "Families that will be applied: "
+                + ", ".join(f"{k} = {v}" for k, v in families_for(chosen).items())
+            )
+
     mode = st.radio(
         "How do you want to get your data in?",
         ["Load the example", "Upload files", "Type it in", "Paste from Excel"],
