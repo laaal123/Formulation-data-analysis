@@ -1,0 +1,9 @@
+[project]
+name = "batchattr"
+version = "1.0.0"
+description = "Batch factor attribution for pharmaceutical formulation, process and IPQC data"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+filterwarnings = ["ignore::UserWarning", "ignore::FutureWarning"]

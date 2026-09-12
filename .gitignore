@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+.DS_Store
+.idea/
+.vscode/
+# analysis outputs, not source
+method_record.md
+method_record.json
+*.xlsx
+!tests/**/*.xlsx

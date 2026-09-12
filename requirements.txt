@@ -1,0 +1,10 @@
+# Runtime requirements. Streamlit Community Cloud installs this file.
+# Pinned on purpose: determinism is part of the specification, and an unpinned
+# solver version means the same input can stop giving the same output.
+numpy==2.4.4
+pandas==3.0.2
+scipy==1.17.1
+scikit-learn==1.8.0
+matplotlib==3.10.8
+streamlit==1.63.0
+openpyxl==3.1.5
